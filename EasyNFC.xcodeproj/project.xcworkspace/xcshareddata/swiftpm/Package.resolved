@@ -1,0 +1,15 @@
+{
+  "originHash" : "b5ed597e0db40fb8a165ddee95abfa18ee419aa0acb2ed67900c30ce6d29c9b2",
+  "pins" : [
+    {
+      "identity" : "swift-uix",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/lsongdev/swift-uix.git",
+      "state" : {
+        "branch" : "master",
+        "revision" : "797851509ec0a81901d8c07f5dd29dd11e074618"
+      }
+    }
+  ],
+  "version" : 3
+}
