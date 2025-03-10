@@ -10,9 +10,9 @@ struct URIPrefix {
 extension NFCTag {
     // Additional special URL types that override the standard prefixes
     static let specialURLTypes: [URIPrefix] = [
+        URIPrefix(prefix: "mailto:", displayName: "mailto:"),
+        URIPrefix(prefix: "tel:", displayName: "tel:"),
         URIPrefix(prefix: "wifi:", displayName: "Wi-Fi"),
-        URIPrefix(prefix: "mailto:", displayName: "Email"),
-        URIPrefix(prefix: "tel:", displayName: "Phone Call"),
         URIPrefix(prefix: "facetime:", displayName: "FaceTime Video")
     ]
 }
@@ -92,7 +92,7 @@ struct NFCRecordEditorView: View {
     
     var urlSection: some View {
         Group {
-            Picker("Type", selection: $prefix) {
+            Picker("Prefix", selection: $prefix) {
                 ForEach(allURLTypes, id: \.prefix) { uriPrefix in
                     Text(uriPrefix.displayName).tag(uriPrefix.prefix)
                 }
@@ -107,8 +107,11 @@ struct NFCRecordEditorView: View {
                     Text("WPA").tag("WPA")
                     Text("WPA2").tag("WPA2")
                 }
+            case "tel:":
+                TextField("phone number", text: $content)
+                    .keyboardType(.phonePad)
             case "facetime:":
-                TextField("Phone number or email", text: $email)
+                TextField("phone number or email", text: $email)
                     .keyboardType(.emailAddress)
             case "mailto:":
                 InputField("To", text: $email)

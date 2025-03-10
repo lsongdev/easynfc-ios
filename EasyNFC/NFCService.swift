@@ -141,8 +141,7 @@ class NFCService: NSObject {
     ///   - completion: Completion callback, returns the parsed NFCTag object
     private func readTag(_ tag: NFCNDEFTag, session: NFCNDEFReaderSession, completion: @escaping (NFCTag) -> Void) {
         // Create basic tag data
-        var nfcTag = NFCTag(identifier: Data())
-        
+        var nfcTag = NFCTag()
         // Set identifier (this part is synchronous)
         nfcTag.identifier = extractTagIdentifier(from: tag)
         // 根据具体的标签类型设置 ISO 标准和标签家族
@@ -218,14 +217,12 @@ class NFCService: NSObject {
         }
         return Data()
     }
-    
     /// Process a detected tag from NFCTagReaderSession
     /// - Parameters:
     ///   - tag: The detected tag
     ///   - session: The tag reader session
     private func processDetectedTag(_ tag: CoreNFC.NFCTag, session: NFCTagReaderSession) {
-        var nfcTagModel = NFCTag(identifier: Data())
-        
+        var nfcTagModel = NFCTag()
         switch tag {
         case let .miFare(mifareTag):
             nfcTagModel.identifier = mifareTag.identifier
@@ -320,7 +317,6 @@ class NFCService: NSObject {
         case let .iso15693(iso15693Tag):
             nfcTagModel.identifier = iso15693Tag.identifier
             nfcTagModel.isoStandard = "ISO 15693"
-            
             iso15693Tag.queryNDEFStatus { (status, capacity, error) in
                 if let error = error {
                     session.invalidate(errorMessage: "Failed to query tag: \(error.localizedDescription)")
@@ -401,7 +397,6 @@ class NFCService: NSObject {
         case let .iso7816(iso7816Tag):
             nfcTagModel.identifier = iso7816Tag.identifier
             nfcTagModel.isoStandard = "ISO 7816"
-            
             if let historicalBytes = iso7816Tag.historicalBytes, !historicalBytes.isEmpty {
                 nfcTagModel.tagFamily = "EMV/银行卡"
             }
