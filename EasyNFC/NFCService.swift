@@ -134,20 +134,36 @@ class NFCService: NSObject {
         }
     }
     
-    /// Read NFC tag information
+    // MARK: - Private methods
+    
+    /// Asynchronously query the NDEF status of a tag
+    /// - Parameter tag: The NFC NDEF tag to query
+    /// - Returns: A tuple containing the status and capacity of the tag
+    /// - Throws: NFCServiceError if an error occurs during the query
+    private func queryNDEFStatusAsync(tag: NFCNDEFTag) async throws -> (status: NFCNDEFStatus, capacity: Int) {
+        return try await withCheckedThrowingContinuation { continuation in
+            tag.queryNDEFStatus { status, capacity, error in
+                if let error = error {
+                    continuation.resume(throwing: NFCServiceError.readFailed(error))
+                    return
+                }
+                continuation.resume(returning: (status, capacity))
+            }
+        }
+    }
+    
+    /// Read NFC tag information asynchronously
     /// - Parameters:
     ///   - tag: NFC tag
     ///   - session: NFC session
-    ///   - completion: Completion callback, returns the parsed NFCTag object
-    private func readTag(_ tag: NFCNDEFTag, session: NFCNDEFReaderSession, completion: @escaping (NFCTag) -> Void) {
+    /// - Returns: The parsed NFCTag object
+    /// - Throws: NFCServiceError if an error occurs during reading
+    private func readDEFTagAsync(_ tag: NFCNDEFTag, session: NFCReaderSession) async throws -> NFCTag {
         // Create basic tag data
         var nfcTag = NFCTag()
-        // Set identifier (this part is synchronous)
-        nfcTag.identifier = extractTagIdentifier(from: tag)
-        // 根据具体的标签类型设置 ISO 标准和标签家族
         if let mifareTag = tag as? NFCMiFareTag {
+            nfcTag.id = mifareTag.identifier
             nfcTag.isoStandard = "ISO 14443-A"
-            
             if mifareTag.mifareFamily == .desfire {
                 nfcTag.tagFamily = "MIFARE DESFire"
             } else if mifareTag.mifareFamily == .ultralight {
@@ -157,412 +173,164 @@ class NFCService: NSObject {
             } else {
                 nfcTag.tagFamily = "MIFARE Classic"
             }
-        } else if tag is NFCISO15693Tag {
+        } else if let iso15693 = tag as? NFCISO15693Tag {
+            nfcTag.id = iso15693.identifier
             nfcTag.isoStandard = "ISO 15693"
         } else if let iso7816Tag = tag as? NFCISO7816Tag {
+            nfcTag.id = iso7816Tag.identifier
             nfcTag.isoStandard = "ISO 7816"
-            
             if let historicalBytes = iso7816Tag.historicalBytes, !historicalBytes.isEmpty {
                 nfcTag.tagFamily = "EMV/银行卡"
             }
-        } else if tag is NFCFeliCaTag {
+        } else if let felica = tag as? NFCFeliCaTag {
+            nfcTag.id = felica.currentIDm
             nfcTag.isoStandard = "ISO 18092"
             nfcTag.tagFamily = "FeliCa"
         }
+//        else {
+//            print("NFCServiceError.tagNotSupported", tag.isAvailable)
+//            session.invalidate(errorMessage: "Tag type not supported")
+//            throw NFCServiceError.tagNotSupported
+//        }
         
-        // Query NDEF status (asynchronous operation)
-        tag.queryNDEFStatus { [weak self] status, capacity, error in
-            guard let self = self else { return }
-            
-            if let error = error {
-                session.invalidate(errorMessage: "Failed to query tag: \(error.localizedDescription)")
-                self.handleError(NFCServiceError.readFailed(error))
-                return
-            }
-            
+        // Query NDEF status using the async wrapper
+        do {
+            let (status, capacity) = try await queryNDEFStatusAsync(tag: tag)
             switch status {
             case .notSupported:
                 session.invalidate(errorMessage: "Tag doesn't support NDEF format")
-                self.handleError(NFCServiceError.readFailed(NSError(domain: "NFCService", code: 1, userInfo: [NSLocalizedDescriptionKey: "Tag doesn't support NDEF format"])))
-                return
+                throw NFCServiceError.readFailed(NSError(domain: "NFCService", code: 1, userInfo: [NSLocalizedDescriptionKey: "Tag doesn't support NDEF format"]))
             case .readOnly:
                 nfcTag.isWritable = false
             case .readWrite:
                 nfcTag.isWritable = true
             @unknown default:
                 session.invalidate(errorMessage: "Unknown tag status")
-                self.handleError(NFCServiceError.readFailed(NSError(domain: "NFCService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Unknown tag status"])))
-                return
+                throw NFCServiceError.readFailed(NSError(domain: "NFCService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Unknown tag status"]))
             }
-            
             nfcTag.memorySize = capacity
-            
-            // After asynchronous operation completes, pass the complete tag information to the callback
-            completion(nfcTag)
+            return nfcTag
+        } catch {
+            session.invalidate(errorMessage: "Failed to query tag: \(error.localizedDescription)")
+            throw NFCServiceError.readFailed(error)
         }
     }
     
-    /// Extract identifier from different types of NFC tags
-    /// - Parameter tag: NFC tag
-    /// - Returns: Tag identifier data
-    private func extractTagIdentifier(from tag: NFCNDEFTag) -> Data {
-        if let mifare = tag as? NFCMiFareTag {
-            return mifare.identifier
-        } else if let iso15693 = tag as? NFCISO15693Tag {
-            return iso15693.identifier
-        } else if let iso7816 = tag as? NFCISO7816Tag {
-            return iso7816.identifier
-        } else if let felica = tag as? NFCFeliCaTag {
-            return felica.currentIDm
+    func readNDEFMessage(tag: NFCNDEFTag, session: NFCReaderSession) async throws -> [NFCRecord] {
+        var records: [NFCRecord] = []
+        return try await withCheckedThrowingContinuation { continuation in
+            // Read NDEF message if available
+            tag.readNDEF { [weak self] (message, error) in
+                guard let self = self else { return }
+                
+                if let error = error {
+                    // If there's no NDEF data, we can still return the tag with its identifier
+                    if let ndefError = error as? NFCReaderError,
+                       ndefError.code == .ndefReaderSessionErrorTagNotWritable {
+                        session.alertMessage = "Tag read successfully (no NDEF data)"
+                        session.invalidate()
+                        
+                        continuation.resume(returning: records)
+                        return
+                    } else {
+                        session.invalidate(errorMessage: "Read failed: \(error.localizedDescription)")
+                        self.handleError(NFCServiceError.readFailed(error))
+                        return
+                    }
+                }
+                
+                // Parse NDEF message records
+                if let message = message {
+                    for record in message.records {
+                        let nfcRecord = NFCRecord(from: record)
+                        records.append(nfcRecord)
+                    }
+                }
+                
+                // Complete the read operation
+                session.alertMessage = "Tag read successfully"
+                session.invalidate()
+                
+                // Resume continuation with the tag
+                continuation.resume(returning: records)
+            }
         }
-        return Data()
     }
+
     /// Process a detected tag from NFCTagReaderSession
     /// - Parameters:
     ///   - tag: The detected tag
     ///   - session: The tag reader session
-    private func processDetectedTag(_ tag: CoreNFC.NFCTag, session: NFCTagReaderSession) {
-        var nfcTagModel = NFCTag()
+    private func processTagForReading(_ tag: CoreNFC.NFCTag, session: NFCTagReaderSession) async throws -> NFCTag {
         switch tag {
-        case let .miFare(mifareTag):
-            nfcTagModel.identifier = mifareTag.identifier
-            // 设置 ISO 标准和标签家族
-            nfcTagModel.isoStandard = "ISO 14443-A"
-            if mifareTag.mifareFamily == .desfire {
-                nfcTagModel.tagFamily = "MIFARE DESFire"
-            } else if mifareTag.mifareFamily == .ultralight {
-                nfcTagModel.tagFamily = "MIFARE Ultralight"
-            } else if mifareTag.mifareFamily == .plus {
-                nfcTagModel.tagFamily = "MIFARE Plus"
-            } else {
-                nfcTagModel.tagFamily = "MIFARE Classic"
-            }
-            
-            // The correct way to convert a MiFare tag to an NDEF tag
-            mifareTag.queryNDEFStatus { (status, capacity, error) in
-                if let error = error {
-                    session.invalidate(errorMessage: "Failed to query tag: \(error.localizedDescription)")
-                    self.handleError(NFCServiceError.readFailed(error))
-                    return
-                }
-                
-                // Update tag properties based on NDEF status
-                switch status {
-                case .notSupported:
-                    // Even if NDEF is not supported, we still have the identifier
-                    session.alertMessage = "Tag read successfully (no NDEF support)"
-                    session.invalidate()
-                    
-                    if let continuation = self.readContinuation {
-                        self.readContinuation = nil
-                        continuation.resume(returning: nfcTagModel)
-                    }
-                    return
-                    
-                case .readOnly:
-                    nfcTagModel.isWritable = false
-                case .readWrite:
-                    nfcTagModel.isWritable = true
-                @unknown default:
-                    session.invalidate(errorMessage: "Unknown tag status")
-                    self.handleError(NFCServiceError.readFailed(NSError(domain: "NFCService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Unknown tag status"])))
-                    return
-                }
-                
-                nfcTagModel.memorySize = capacity
-                
-                // Read NDEF message if available
-                mifareTag.readNDEF { [weak self] (message, error) in
-                    guard let self = self else { return }
-                    
-                    if let error = error {
-                        // If there's no NDEF data, we can still return the tag with its identifier
-                        if let ndefError = error as? NFCReaderError,
-                           ndefError.code == .ndefReaderSessionErrorTagNotWritable {
-                            session.alertMessage = "Tag read successfully (no NDEF data)"
-                            session.invalidate()
-                            
-                            if let continuation = self.readContinuation {
-                                self.readContinuation = nil
-                                continuation.resume(returning: nfcTagModel)
-                            }
-                            return
-                        } else {
-                            session.invalidate(errorMessage: "Read failed: \(error.localizedDescription)")
-                            self.handleError(NFCServiceError.readFailed(error))
-                            return
-                        }
-                    }
-                    
-                    // Parse NDEF message records
-                    if let message = message {
-                        for record in message.records {
-                            let nfcRecord = NFCRecord(from: record)
-                            nfcTagModel.records.append(nfcRecord)
-                        }
-                    }
-                    
-                    // Complete the read operation
-                    session.alertMessage = "Tag read successfully"
-                    session.invalidate()
-                    
-                    // Resume continuation with the tag
-                    if let continuation = self.readContinuation {
-                        self.readContinuation = nil
-                        continuation.resume(returning: nfcTagModel)
-                    }
-                }
-            }
-            
-        case let .iso15693(iso15693Tag):
-            nfcTagModel.identifier = iso15693Tag.identifier
-            nfcTagModel.isoStandard = "ISO 15693"
-            iso15693Tag.queryNDEFStatus { (status, capacity, error) in
-                if let error = error {
-                    session.invalidate(errorMessage: "Failed to query tag: \(error.localizedDescription)")
-                    self.handleError(NFCServiceError.readFailed(error))
-                    return
-                }
-                
-                var updatedTag = nfcTagModel
-                
-                // Update tag properties
-                switch status {
-                case .notSupported:
-                    // Even if NDEF is not supported, we still have the identifier
-                    session.alertMessage = "Tag read successfully (no NDEF support)"
-                    session.invalidate()
-                    
-                    if let continuation = self.readContinuation {
-                        self.readContinuation = nil
-                        continuation.resume(returning: updatedTag)
-                    }
-                    return
-                    
-                case .readOnly:
-                    updatedTag.isWritable = false
-                case .readWrite:
-                    updatedTag.isWritable = true
-                @unknown default:
-                    session.invalidate(errorMessage: "Unknown tag status")
-                    self.handleError(NFCServiceError.readFailed(NSError(domain: "NFCService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Unknown tag status"])))
-                    return
-                }
-                
-                updatedTag.memorySize = capacity
-                
-                // Read NDEF message
-                iso15693Tag.readNDEF { [weak self] (message, error) in
-                    guard let self = self else { return }
-                    
-                    if let error = error {
-                        // If there's no NDEF data, we can still return the tag with its identifier
-                        if let ndefError = error as? NFCReaderError,
-                           ndefError.code == .ndefReaderSessionErrorTagNotWritable {
-                            session.alertMessage = "Tag read successfully (no NDEF data)"
-                            session.invalidate()
-                            
-                            if let continuation = self.readContinuation {
-                                self.readContinuation = nil
-                                continuation.resume(returning: updatedTag)
-                            }
-                            return
-                        } else {
-                            session.invalidate(errorMessage: "Read failed: \(error.localizedDescription)")
-                            self.handleError(NFCServiceError.readFailed(error))
-                            return
-                        }
-                    }
-                    
-                    // Parse NDEF message records
-                    if let message = message {
-                        for record in message.records {
-                            let nfcRecord = NFCRecord(from: record)
-                            updatedTag.records.append(nfcRecord)
-                        }
-                    }
-                    
-                    // Complete the read operation
-                    session.alertMessage = "Tag read successfully"
-                    session.invalidate()
-                    
-                    // Resume continuation with the tag
-                    if let continuation = self.readContinuation {
-                        self.readContinuation = nil
-                        continuation.resume(returning: updatedTag)
-                    }
-                }
-            }
-            
-        case let .iso7816(iso7816Tag):
-            nfcTagModel.identifier = iso7816Tag.identifier
-            nfcTagModel.isoStandard = "ISO 7816"
-            if let historicalBytes = iso7816Tag.historicalBytes, !historicalBytes.isEmpty {
-                nfcTagModel.tagFamily = "EMV/银行卡"
-            }
-            
-            iso7816Tag.queryNDEFStatus { (status, capacity, error) in
-                if let error = error {
-                    session.invalidate(errorMessage: "Failed to query tag: \(error.localizedDescription)")
-                    self.handleError(NFCServiceError.readFailed(error))
-                    return
-                }
-                
-                var updatedTag = nfcTagModel
-                
-                // Update tag properties
-                switch status {
-                case .notSupported:
-                    // Even if NDEF is not supported, we still have the identifier
-                    session.alertMessage = "Tag read successfully (no NDEF support)"
-                    session.invalidate()
-                    
-                    if let continuation = self.readContinuation {
-                        self.readContinuation = nil
-                        continuation.resume(returning: updatedTag)
-                    }
-                    return
-                    
-                case .readOnly:
-                    updatedTag.isWritable = false
-                case .readWrite:
-                    updatedTag.isWritable = true
-                @unknown default:
-                    session.invalidate(errorMessage: "Unknown tag status")
-                    self.handleError(NFCServiceError.readFailed(NSError(domain: "NFCService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Unknown tag status"])))
-                    return
-                }
-                
-                updatedTag.memorySize = capacity
-                
-                // Read NDEF message
-                iso7816Tag.readNDEF { [weak self] (message, error) in
-                    guard let self = self else { return }
-                    
-                    if let error = error {
-                        // If there's no NDEF data, we can still return the tag with its identifier
-                        if let ndefError = error as? NFCReaderError,
-                           ndefError.code == .ndefReaderSessionErrorTagNotWritable {
-                            session.alertMessage = "Tag read successfully (no NDEF data)"
-                            session.invalidate()
-                            
-                            if let continuation = self.readContinuation {
-                                self.readContinuation = nil
-                                continuation.resume(returning: updatedTag)
-                            }
-                            return
-                        } else {
-                            session.invalidate(errorMessage: "Read failed: \(error.localizedDescription)")
-                            self.handleError(NFCServiceError.readFailed(error))
-                            return
-                        }
-                    }
-                    
-                    // Parse NDEF message records
-                    if let message = message {
-                        for record in message.records {
-                            let nfcRecord = NFCRecord(from: record)
-                            updatedTag.records.append(nfcRecord)
-                        }
-                    }
-                    
-                    // Complete the read operation
-                    session.alertMessage = "Tag read successfully"
-                    session.invalidate()
-                    
-                    // Resume continuation with the tag
-                    if let continuation = self.readContinuation {
-                        self.readContinuation = nil
-                        continuation.resume(returning: updatedTag)
-                    }
-                }
-            }
-            
-        case let .feliCa(felicaTag):
-            nfcTagModel.identifier = felicaTag.currentIDm
-            nfcTagModel.isoStandard = "ISO 18092"
-            nfcTagModel.tagFamily = "FeliCa"
-            
-            felicaTag.queryNDEFStatus { (status, capacity, error) in
-                if let error = error {
-                    session.invalidate(errorMessage: "Failed to query tag: \(error.localizedDescription)")
-                    self.handleError(NFCServiceError.readFailed(error))
-                    return
-                }
-                
-                var updatedTag = nfcTagModel
-                
-                // Update tag properties
-                switch status {
-                case .notSupported:
-                    // Even if NDEF is not supported, we still have the identifier
-                    session.alertMessage = "Tag read successfully (no NDEF support)"
-                    session.invalidate()
-                    
-                    if let continuation = self.readContinuation {
-                        self.readContinuation = nil
-                        continuation.resume(returning: updatedTag)
-                    }
-                    return
-                    
-                case .readOnly:
-                    updatedTag.isWritable = false
-                case .readWrite:
-                    updatedTag.isWritable = true
-                @unknown default:
-                    session.invalidate(errorMessage: "Unknown tag status")
-                    self.handleError(NFCServiceError.readFailed(NSError(domain: "NFCService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Unknown tag status"])))
-                    return
-                }
-                
-                updatedTag.memorySize = capacity
-                
-                // Read NDEF message
-                felicaTag.readNDEF { [weak self] (message, error) in
-                    guard let self = self else { return }
-                    
-                    if let error = error {
-                        // If there's no NDEF data, we can still return the tag with its identifier
-                        if let ndefError = error as? NFCReaderError,
-                           ndefError.code == .ndefReaderSessionErrorTagNotWritable {
-                            session.alertMessage = "Tag read successfully (no NDEF data)"
-                            session.invalidate()
-                            
-                            if let continuation = self.readContinuation {
-                                self.readContinuation = nil
-                                continuation.resume(returning: updatedTag)
-                            }
-                            return
-                        } else {
-                            session.invalidate(errorMessage: "Read failed: \(error.localizedDescription)")
-                            self.handleError(NFCServiceError.readFailed(error))
-                            return
-                        }
-                    }
-                    
-                    // Parse NDEF message records
-                    if let message = message {
-                        for record in message.records {
-                            let nfcRecord = NFCRecord(from: record)
-                            updatedTag.records.append(nfcRecord)
-                        }
-                    }
-                    
-                    // Complete the read operation
-                    session.alertMessage = "Tag read successfully"
-                    session.invalidate()
-                    
-                    // Resume continuation with the tag
-                    if let continuation = self.readContinuation {
-                        self.readContinuation = nil
-                        continuation.resume(returning: updatedTag)
-                    }
-                }
-            }
-            
+        case let .miFare(mifare):
+            var nfcTag = try await readDEFTagAsync(mifare, session: session)
+            nfcTag.records = try await readNDEFMessage(tag: mifare, session: session)
+            return nfcTag
+        case let .feliCa(felica):
+            var nfcTag = try await readDEFTagAsync(felica, session: session)
+            nfcTag.records = try await readNDEFMessage(tag: felica, session: session)
+            return nfcTag
+        case let .iso7816(iso7816):
+            var nfcTag = try await readDEFTagAsync(iso7816, session: session)
+            nfcTag.records = try await readNDEFMessage(tag: iso7816, session: session)
+            return nfcTag
+        case let .iso15693(iso15693):
+            var nfcTag = try await readDEFTagAsync(iso15693, session: session)
+            nfcTag.records = try await readNDEFMessage(tag: iso15693, session: session)
+            return nfcTag
         @unknown default:
-            session.invalidate(errorMessage: "Unsupported tag type")
-            self.handleError(NFCServiceError.tagNotSupported)
+            throw NFCServiceError.tagNotSupported
+        }
+    }
+    
+    /// Process tag for writing operation
+    /// - Parameters:
+    ///   - tag: NFC tag
+    ///   - session: NFC session
+    private func processTagForWriting(_ tag: NFCNDEFTag, session: NFCNDEFReaderSession) async throws {
+        // Read basic tag information
+        let nfcTag = try await readDEFTagAsync(tag, session: session)
+        // Check if tag is writable
+        guard nfcTag.isWritable ?? false else {
+            session.invalidate(errorMessage: "Tag is read-only")
+            self.handleError(NFCServiceError.tagNotWritable)
+            return
+        }
+        
+        // Create and write NDEF message
+        var ndefRecords: [NFCNDEFPayload] = []
+        for record in self.writeRecords {
+            if let payload = record.createNDEFPayload() {
+                ndefRecords.append(payload)
+            }
+        }
+        let message = NFCNDEFMessage(records: ndefRecords)
+        
+        // Check if there are valid records
+        guard !message.records.isEmpty else {
+            session.invalidate(errorMessage: "No valid records to write")
+            self.handleError(NFCServiceError.noRecordsToWrite)
+            return
+        }
+        
+        // Write NDEF message (asynchronous)
+        tag.writeNDEF(message) { [weak self] error in
+            guard let self = self else { return }
+
+            if let error = error {
+                session.invalidate(errorMessage: "Write failed: \(error.localizedDescription)")
+                self.handleError(NFCServiceError.writeFailed(error))
+            } else {
+                session.alertMessage = "Successfully wrote to tag"
+                session.invalidate()
+                
+                // Resume continuation if available
+                if let continuation = self.writeContinuation {
+                    self.writeContinuation = nil
+                    continuation.resume(returning: ())
+                }
+            }
         }
     }
 }
@@ -615,63 +383,13 @@ extension NFCService: NFCNDEFReaderSessionDelegate {
                 return
             }
             
-            // Process tag for writing (NDEF session is only used for writing in this implementation)
-            self.processTagForWriting(tag, session: session)
+            Task {
+                // Process tag for writing (NDEF session is only used for writing in this implementation)
+                try await self.processTagForWriting(tag, session: session)
+            }
         }
     }
     
-    /// Process tag for writing operation
-    /// - Parameters:
-    ///   - tag: NFC tag
-    ///   - session: NFC session
-    private func processTagForWriting(_ tag: NFCNDEFTag, session: NFCNDEFReaderSession) {
-        // Read basic tag information (asynchronous)
-        readTag(tag, session: session) { [weak self] nfcTag in
-            guard let self = self else { return }
-            
-            // Check if tag is writable
-            guard nfcTag.isWritable ?? false else {
-                session.invalidate(errorMessage: "Tag is read-only")
-                self.handleError(NFCServiceError.tagNotWritable)
-                return
-            }
-            
-            // Create and write NDEF message
-            var ndefRecords: [NFCNDEFPayload] = []
-            for record in self.writeRecords {
-                if let payload = record.createNDEFPayload() {
-                    ndefRecords.append(payload)
-                }
-            }
-            let message = NFCNDEFMessage(records: ndefRecords)
-            
-            // Check if there are valid records
-            guard !message.records.isEmpty else {
-                session.invalidate(errorMessage: "No valid records to write")
-                self.handleError(NFCServiceError.noRecordsToWrite)
-                return
-            }
-            
-            // Write NDEF message (asynchronous)
-            tag.writeNDEF(message) { [weak self] error in
-                guard let self = self else { return }
-
-                if let error = error {
-                    session.invalidate(errorMessage: "Write failed: \(error.localizedDescription)")
-                    self.handleError(NFCServiceError.writeFailed(error))
-                } else {
-                    session.alertMessage = "Successfully wrote to tag"
-                    session.invalidate()
-                    
-                    // Resume continuation if available
-                    if let continuation = self.writeContinuation {
-                        self.writeContinuation = nil
-                        continuation.resume(returning: ())
-                    }
-                }
-            }
-        }
-    }
 }
 
 // MARK: - NFC Tag Reader Session Delegate
@@ -704,21 +422,30 @@ extension NFCService: NFCTagReaderSessionDelegate {
             }
             return
         }
-        
         guard let tag = tags.first else { return }
-        
         // Connect to the tag
         session.connect(to: tag) { [weak self] error in
             guard let self = self else { return }
-            
             if let error = error {
                 session.invalidate(errorMessage: "Connection error: \(error.localizedDescription)")
                 self.handleError(NFCServiceError.connectionFailed(error))
                 return
             }
-            
-            // Process the detected tag
-            self.processDetectedTag(tag, session: session)
+            Task {
+                do {
+                    let nfcTag = try await self.processTagForReading(tag, session: session)
+                    session.alertMessage = "Tag read successfully"
+                    session.invalidate()
+                    
+                    if let continuation = self.readContinuation {
+                        self.readContinuation = nil
+                        continuation.resume(returning: nfcTag)
+                    }
+                } catch {
+                    session.invalidate(errorMessage: "Processing error: \(error.localizedDescription)")
+                    self.handleError(error)
+                }
+            }
         }
     }
 }

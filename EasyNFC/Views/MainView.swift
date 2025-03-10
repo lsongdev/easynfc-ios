@@ -163,7 +163,7 @@ struct NFCMainView: View {
     
     private func deleteItems(at offsets: IndexSet) {
         for index in offsets {
-            appManager.deleteTag(id: filteredTags[index].id)
+            appManager.deleteTag(filteredTags[index])
         }
     }
 }

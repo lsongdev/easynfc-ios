@@ -10,10 +10,8 @@ import SwiftUI
 // MARK: - Data Models
 
 struct NFCTag: Identifiable, Codable {
-    var id = UUID()
-    // 存储属性
+    var id: Data = Data()
     var name: String = ""
-    var identifier: Data = Data()
     var isWritable: Bool? = nil
     var memorySize: Int = 0
     var timestamp: Date = Date()
@@ -23,7 +21,7 @@ struct NFCTag: Identifiable, Codable {
     var isoStandard: String = ""  // ISO标准，如 "ISO 14443-A", "ISO 15693"
     var tagFamily: String = ""    // 标签家族，如 "MIFARE Classic", "MIFARE DESFire"
     var serialNumber: String {
-        return identifier.map { String(format: "%02X", $0) }.joined()
+        return id.map { String(format: "%02X", $0) }.joined()
     }
     var usedSize: Int {
         // TODO: records.reduce()
@@ -39,14 +37,14 @@ struct NFCTag: Identifiable, Codable {
     
     // CodingKeys to exclude computed properties
     enum CodingKeys: String, CodingKey {
-        case id, name, identifier, isWritable, memorySize, records, timestamp
+        case id, name, isWritable, memorySize, records, timestamp
         case isoStandard, tagFamily
     }
     
     // 从序列号获取制造商信息
     var manufacturer: String {
-        guard identifier.count >= 2 else { return "" }
-        let manufacturerByte = identifier[0]
+        guard id.count >= 2 else { return "" }
+        let manufacturerByte = id[0]
         switch manufacturerByte {
         case 0x04: return "NXP Semiconductors"
         case 0x05: return "Infineon"
@@ -57,7 +55,7 @@ struct NFCTag: Identifiable, Codable {
         case 0x20: return "Sony"
         case 0x88: return "Atmel"
         case 0xD0: return "Renesas"
-        case 0x08: return identifier.count >= 7 && identifier[1] == 0x04 ? "NXP - MIFARE DESFire" : "NXP - MIFARE Family"
+        case 0x08: return id.count >= 7 && id[1] == 0x04 ? "NXP - MIFARE DESFire" : "NXP - MIFARE Family"
         case 0xFE: return "Sony FeliCa"
         default: return "Unknown (\(String(format: "%02X", manufacturerByte)))"
         }
@@ -66,13 +64,13 @@ struct NFCTag: Identifiable, Codable {
         if !isoStandard.isEmpty {
             return isoStandard
         }
-        guard identifier.count >= 2 else { return "Unknown" }
-        let manufacturerByte = identifier[0]
+        guard id.count >= 2 else { return "Unknown" }
+        let manufacturerByte = id[0]
         switch manufacturerByte {
         case 0x04, 0x05, 0x07, 0x28, 0x38, 0x01, 0x02, 0x03, 0x20, 0x88, 0xD0:
             return "ISO 14443-A"
         case 0x08:
-            if identifier.count >= 7 && identifier[1] == 0x04 {
+            if id.count >= 7 && id[1] == 0x04 {
                 return "ISO 14443-4"
             } else {
                 return "ISO 14443-3"
@@ -91,11 +89,11 @@ struct NFCTag: Identifiable, Codable {
         if !tagFamily.isEmpty {
             return tagFamily
         }
-        guard identifier.count >= 2 else { return "Unknown" }
-        let manufacturerByte = identifier[0]
+        guard id.count >= 2 else { return "Unknown" }
+        let manufacturerByte = id[0]
         switch manufacturerByte {
         case 0x08:
-            if identifier.count >= 7 && identifier[1] == 0x04 {
+            if id.count >= 7 && id[1] == 0x04 {
                 return "MIFARE DESFire"
             } else {
                 return "MIFARE Classic"
@@ -103,7 +101,7 @@ struct NFCTag: Identifiable, Codable {
         case 0xFE:
             return "FeliCa"
         case 0x1D:
-            if identifier.count >= 2 && identifier[1] == 0x3C {
+            if id.count >= 2 && id[1] == 0x3C {
                 return "Fudan FM11RF08"
             }
             return ""

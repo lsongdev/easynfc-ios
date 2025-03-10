@@ -49,8 +49,8 @@ class AppManager: ObservableObject {
     
     /// 删除保存的 NFC 标签
     /// - Parameter id: 要删除的标签 ID
-    func deleteTag(id: UUID) {
-        savedTags.removeAll { $0.id == id }
+    func deleteTag(_ tag: NFCTag) {
+        savedTags.removeAll { $0.id == tag.id }
         saveTags()
     }
     
