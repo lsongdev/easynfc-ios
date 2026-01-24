@@ -42,7 +42,9 @@ struct NFCTagView: View {
                 if tag.memorySize > 0 {
                     LabeledText(label: "Memory Size", value: "\(tag.memorySize) bytes")
                 }
-                LabeledText(label: "Used Space", value: "\(tag.usedSize) bytes")
+                if tag.usedSize > 0 {
+                    LabeledText(label: "Used Space", value: "\(tag.usedSize) bytes")
+                }
                 if let isWritable = tag.isWritable {
                     LabeledText(label: "Writable", value:  isWritable ? "Yes" : "No", valueColor: isWritable ? .green : .red)
                 }

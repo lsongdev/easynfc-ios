@@ -18,18 +18,25 @@ struct NFCRecord: Identifiable, Codable {
         switch type {
         case "T": return "Text"
         case "U": return "URL"
+        case "android.com:pkg":
+            return "Android Package"
+        case "hw":
+            return "Huawei Package"
         default:
-            return "Unknown"
+            return "Unknown \(type)"
         }
     }
     
     var displayContent: String {
-        switch displayType {
-        case "Text":
+        switch type {
+        case "T":
+            print(payload)
             let (content, _) = NFCTag.parseTextPayload(payload)!
             return content
-        case "URL":
+        case "U":
             return NFCTag.parseURIPayload(payload)!
+        case "android.com:pkg":
+            return String(data: payload, encoding: .utf8)!
         default:
             return "<unknown>"
         }

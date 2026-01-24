@@ -14,8 +14,8 @@ struct RecordDetailView: View {
     var body: some View {
         List {
             Section(header: Text("Basic")) {
-                LabeledText(label: "Type", value: record.displayType)
                 LabeledText(label: "Format", value: record.displayFormat)
+                LabeledText(label: "Type", value: record.displayType)
                 LabeledText(label: "Payload Size", value: "\(record.payload.count) bytes")
             }
             
@@ -52,16 +52,23 @@ struct RecordDetailView: View {
             
             Section("Raw") {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(String(data: record.payload, encoding: .utf8)!)
-                        .font(.body)
-                        .padding()
-                    
-                    Divider()
+//                    Text(String(data: record.payload, encoding: .utf8)!)
+//                        .font(.body)
+//                        .padding()
+//                    
+//                    Divider()
                     
                     Text(NFCTag.dataToHexString(record.payload))
                         .font(.body)
                         .foregroundColor(.secondary)
                         .padding()
+                }
+                .contextMenu {
+                    Button {
+                        UIPasteboard.general.string = NFCTag.dataToHexString(record.payload)
+                    } label: {
+                        Label("Copy to clipboard", systemImage: "document.on.clipboard")
+                    }
                 }
             }
         }

@@ -118,6 +118,12 @@ struct NFCMainView: View {
                 }
             } catch let error as NFCServiceError {
                 // Handle specific NFC errors
+                switch error {
+                case .userCanceled:
+                    return
+                default:
+                    print(error.localizedDescription)
+                }
                 await MainActor.run {
                     appManager.showAlert(
                         title: "NFC Error",

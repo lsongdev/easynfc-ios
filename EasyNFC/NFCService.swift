@@ -116,7 +116,7 @@ class NFCService: NSObject {
     /// Start an NFC tag reader session (for reading)
     /// - Parameter message: Message to display to the user
     private func startTagReaderSession(with message: String) {
-        tagReaderSession = NFCTagReaderSession(pollingOption: [.iso14443, .iso15693, .iso18092], delegate: self, queue: nil)
+        tagReaderSession = NFCTagReaderSession(pollingOption: [.iso14443, .iso15693, .iso18092, .pace], delegate: self, queue: nil)
         tagReaderSession?.alertMessage = message
         tagReaderSession?.begin()
     }
