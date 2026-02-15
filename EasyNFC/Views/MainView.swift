@@ -24,7 +24,7 @@ struct NFCMainView: View {
     }
     
     var body: some View {
-        NavigationView {
+        NavigationStack {
             
             List {
                 ForEach(filteredTags) { tag in
